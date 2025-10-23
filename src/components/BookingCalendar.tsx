@@ -82,11 +82,13 @@ export function BookingCalendar() {
     if (isSlotBooked(hour)) return;
     
     // Toggle slot selection
-    if (selectedSlots.includes(hour)) {
-      setSelectedSlots(selectedSlots.filter(slot => slot !== hour));
-    } else {
-      setSelectedSlots([...selectedSlots, hour]);
-    }
+    setSelectedSlots(prevSlots => {
+      if (prevSlots.includes(hour)) {
+        return prevSlots.filter(slot => slot !== hour);
+      } else {
+        return [...prevSlots, hour];
+      }
+    });
   };
 
   const handleOpenDialog = () => {
@@ -253,8 +255,13 @@ export function BookingCalendar() {
                   return (
                     <button
                       key={hour}
-                      onClick={() => handleSlotClick(hour)}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleSlotClick(hour);
+                      }}
                       disabled={isBooked}
+                      type="button"
                       className={`
                         p-4 rounded-lg border-2 transition-all duration-200
                         ${
