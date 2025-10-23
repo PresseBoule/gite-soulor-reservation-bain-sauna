@@ -1,13 +1,11 @@
 import { useState, useEffect } from "react";
 import { Calendar } from "./ui/calendar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
 import { Droplets, Flame } from "lucide-react";
 import { toast } from "sonner@2.0.3";
 import { projectId, publicAnonKey } from "../utils/supabase/info";
+import { BookingModal } from "./BookingModal";
 
 interface Booking {
   id: string;
@@ -33,6 +31,14 @@ export function BookingCalendar() {
   useEffect(() => {
     fetchBookings();
   }, []);
+
+  // Nettoyer le formulaire quand le Dialog se ferme
+  useEffect(() => {
+    if (!dialogOpen) {
+      setClientName("");
+      setClientEmail("");
+    }
+  }, [dialogOpen]);
 
   const fetchBookings = async () => {
     try {
@@ -98,7 +104,10 @@ export function BookingCalendar() {
   };
 
   const handleBooking = async () => {
-    if (!selectedDate || selectedSlots.length === 0 || !clientName || !clientEmail) return;
+    if (!selectedDate || selectedSlots.length === 0 || !clientName || !clientEmail) {
+      console.error("Booking validation failed", { selectedDate, selectedSlots, clientName, clientEmail });
+      return;
+    }
 
     const dateStr = selectedDate.toISOString().split("T")[0];
     const newBookings: Booking[] = selectedSlots.map(hour => ({
@@ -164,16 +173,15 @@ export function BookingCalendar() {
 
       // Recharger les réservations depuis la base
       await fetchBookings();
+      
+      // Fermer le Dialog et réinitialiser les créneaux
+      setDialogOpen(false);
+      setSelectedSlots([]);
     } catch (error) {
       console.error("Error during booking:", error);
       toast.error("Erreur lors de la réservation");
       return;
     }
-
-    setDialogOpen(false);
-    setClientName("");
-    setClientEmail("");
-    setSelectedSlots([]);
   };
 
   return (
@@ -254,7 +262,7 @@ export function BookingCalendar() {
                   const isSelected = isSlotSelected(hour);
                   return (
                     <button
-                      key={hour}
+                      key={`slot-${hour}`}
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -263,12 +271,12 @@ export function BookingCalendar() {
                       disabled={isBooked}
                       type="button"
                       className={`
-                        p-4 rounded-lg border-2 transition-all duration-200
+                        p-4 rounded-lg border-2 transition-colors duration-200
                         ${
                           isBooked
                             ? "bg-[#4b5563] border-[#6b7280] text-gray-500 cursor-not-allowed opacity-50"
                             : isSelected
-                            ? "bg-[#c9a66b] border-[#c9a66b] text-[#1f2937] cursor-pointer shadow-lg scale-105"
+                            ? "bg-[#c9a66b] border-[#c9a66b] text-[#1f2937] cursor-pointer shadow-lg"
                             : "bg-[#2d3748] border-[#c9a66b] text-[#c9a66b] hover:bg-[#c9a66b] hover:text-[#1f2937] cursor-pointer"
                         }
                       `}
@@ -306,71 +314,18 @@ export function BookingCalendar() {
           </Card>
         </div>
 
-        {/* Booking Dialog */}
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogContent className="bg-[#374151] border-[#4b5563]">
-            <DialogHeader>
-              <DialogTitle className="text-[#c9a66b] flex items-center gap-2">
-                <Droplets className="w-5 h-5" />
-                <Flame className="w-5 h-5" />
-                Confirmer votre réservation
-              </DialogTitle>
-              <DialogDescription className="text-gray-400">
-                Bain Nordique & Sauna - {selectedDate?.toLocaleDateString("fr-FR")}
-                <div className="mt-2 space-y-1">
-                  {selectedSlots.sort((a, b) => a - b).map((hour, index) => (
-                    <div key={hour} className="text-[#c9a66b]">
-                      Créneau {index + 1}: {hour}h00 - {hour === 23 ? "0h" : hour === 1 ? "2h" : `${hour + 1}h`}00
-                    </div>
-                  ))}
-                </div>
-              </DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="name" className="text-gray-300">
-                  Nom complet
-                </Label>
-                <Input
-                  id="name"
-                  value={clientName}
-                  onChange={(e) => setClientName(e.target.value)}
-                  placeholder="Jean Dupont"
-                  className="bg-[#2d3748] border-[#4b5563] text-gray-200 placeholder:text-gray-500"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="email" className="text-gray-300">
-                  Email
-                </Label>
-                <Input
-                  id="email"
-                  type="email"
-                  value={clientEmail}
-                  onChange={(e) => setClientEmail(e.target.value)}
-                  placeholder="jean@example.com"
-                  className="bg-[#2d3748] border-[#4b5563] text-gray-200 placeholder:text-gray-500"
-                />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setDialogOpen(false)}
-                className="border-[#4b5563] text-gray-300 hover:bg-[#4b5563]"
-              >
-                Annuler
-              </Button>
-              <Button
-                onClick={handleBooking}
-                disabled={!clientName || !clientEmail}
-                className="bg-[#c9a66b] text-[#1f2937] hover:bg-[#b8944d]"
-              >
-                Confirmer la réservation
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        {/* Booking Modal */}
+        <BookingModal
+          isOpen={dialogOpen}
+          onClose={() => setDialogOpen(false)}
+          selectedDate={selectedDate}
+          selectedSlots={selectedSlots}
+          clientName={clientName}
+          clientEmail={clientEmail}
+          onClientNameChange={setClientName}
+          onClientEmailChange={setClientEmail}
+          onConfirm={handleBooking}
+        />
       </div>
     </div>
   );
