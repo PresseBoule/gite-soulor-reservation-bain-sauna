@@ -1,4 +1,4 @@
-const HOURS = [0,1,10,11,12,13,14,15,16,17,18,19,20,21,22,23];
+import { HOURS, hasTooManyConsecutiveHours } from '../../../lib/bookingRules.mjs';
 const validDate = value => typeof value==='string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0,10)===value;
 export function registerBookings(app, db) {
   const prefix='/make-server-2b20b999';
@@ -26,7 +26,9 @@ export function registerBookings(app, db) {
       let body;try{body=JSON.parse(raw);}catch{return c.json({error:'Demande invalide'},400);}
       const {date,clientName,clientEmail}=body,slots=batch?body.slots:[body.hour];
       if(!validDate(date)||typeof clientName!=='string'||!clientName.trim()||clientName.length>150||typeof clientEmail!=='string'||clientEmail.length>254||!/^\S+@[^\s@]+\.[^\s@]+$/.test(clientEmail)||!Array.isArray(slots)||slots.length<1||slots.length>16||new Set(slots).size!==slots.length||!slots.every(hour=>Number.isInteger(hour)&&HOURS.includes(hour)))return c.json({error:'Date, créneaux ou coordonnées invalides'},400);
-      // Retain the legacy date convention for existing calendars; never reinterpret historic dates silently.
+      if(hasTooManyConsecutiveHours(slots))return c.json({error:'Vous ne pouvez pas réserver plus de 2 heures consécutives.'},400);
+      if(date < new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Paris'}).format(new Date()))return c.json({error:'La date de réservation est passée.'},400);
+      // Civil date as used by the actual deployed calendar; never shift existing bookings.
       const bookings=slots.map(hour=>({id:crypto.randomUUID(),date,hour,clientName:clientName.trim(),clientEmail:clientEmail.trim(),status:'accepted',createdAt:new Date().toISOString()}));
       const {data,error}=await db().rpc('soulor_create_wellness_group',{p_bookings:bookings});
       if(error)throw error;

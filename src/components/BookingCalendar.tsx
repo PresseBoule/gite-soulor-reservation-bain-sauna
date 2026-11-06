@@ -6,6 +6,8 @@ import { Droplets, Flame } from "lucide-react";
 import { toast } from "sonner@2.0.3";
 import { projectId, publicAnonKey } from "../utils/supabase/info";
 import { BookingModal } from "./BookingModal";
+import emailjs from "@emailjs/browser";
+import { HOURS, localDateKey, hasTooManyConsecutiveHours } from "../lib/bookingRules.mjs";
 
 interface Booking {
   date: string;
@@ -13,7 +15,7 @@ interface Booking {
 }
 
 // Créneaux de 10h à 2h du matin (16 créneaux d'1h)
-const TIME_SLOTS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1];
+const TIME_SLOTS = HOURS;
 
 export function BookingCalendar() {
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
@@ -71,7 +73,7 @@ export function BookingCalendar() {
 
   const isSlotBooked = (hour: number) => {
     if (!selectedDate) return false;
-    const dateStr = selectedDate.toISOString().split("T")[0];
+    const dateStr = localDateKey(selectedDate);
     return bookings.some(
       (booking) =>
         booking.date === dateStr &&
@@ -97,7 +99,9 @@ export function BookingCalendar() {
       if (prevSlots.includes(hour)) {
         return prevSlots.filter(slot => slot !== hour);
       } else {
-        return [...prevSlots, hour];
+        const next = [...prevSlots, hour];
+        if (hasTooManyConsecutiveHours(next)) { toast.error("Vous ne pouvez pas réserver plus de 2 heures consécutives."); return prevSlots; }
+        return next;
       }
     });
   };
@@ -113,7 +117,8 @@ export function BookingCalendar() {
       return;
     }
 
-    const dateStr = selectedDate.toISOString().split("T")[0];
+    if (hasTooManyConsecutiveHours(selectedSlots)) { toast.error("Vous ne pouvez pas réserver plus de 2 heures consécutives."); return; }
+    const dateStr = localDateKey(selectedDate);
     setSaving(true);
     try {
       const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/bookings/batch`, {
@@ -126,36 +131,16 @@ export function BookingCalendar() {
         toast.error(result.error || "Réservation impossible. Actualisez le calendrier."); return;
       }
 
-      // Envoyer l'email de notification
-      const emailResponse = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/send-booking-email`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${publicAnonKey}`,
-          },
-          body: JSON.stringify({
-            clientName,
-            clientEmail,
-            date: selectedDate.toLocaleDateString("fr-FR", {
-              weekday: "long",
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            }),
-            slots: selectedSlots,
-          }),
-        }
-      );
-
-      if (!emailResponse.ok) {
-        const errorData = await emailResponse.json();
-        console.error("Failed to send email:", errorData);
-        toast.error("Réservation enregistrée mais email non envoyé");
-      } else {
-        toast.success("Réservation confirmée ! Un email a été envoyé.");
-      }
+      // Preserve the email service and template used by the live calendar.
+      // This runs only after every requested slot has been saved successfully.
+      try {
+        const slotsText = [...selectedSlots].sort((a,b)=>a-b).map(hour=>`${hour}h00 – ${(hour+1)%24}h00`).join(", ");
+        await emailjs.send("service_bain_sauna", "template_1da9iji", {
+          client_name:clientName, client_email:clientEmail,
+          date:selectedDate.toLocaleDateString("fr-FR",{weekday:"long",year:"numeric",month:"long",day:"numeric"}),slots:slotsText,
+        }, "Po1cvlscPzVavD84k");
+        toast.success("Réservation confirmée ! Un email de confirmation a été envoyé.");
+      } catch { toast.success("Réservation enregistrée. L’email de confirmation n’a pas pu être envoyé."); }
 
       // Recharger les réservations depuis la base
       await fetchBookings();
@@ -255,7 +240,7 @@ export function BookingCalendar() {
                         e.stopPropagation();
                         handleSlotClick(hour);
                       }}
-                      disabled={isBooked}
+                      disabled={isBooked || saving}
                       type="button"
                       className={`
                         p-4 rounded-lg border-2 transition-colors duration-200
