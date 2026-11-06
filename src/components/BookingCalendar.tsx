@@ -6,17 +6,16 @@ import { Droplets, Flame } from "lucide-react";
 import { toast } from "sonner@2.0.3";
 import { projectId, publicAnonKey } from "../utils/supabase/info";
 import { BookingModal } from "./BookingModal";
+import emailjs from "@emailjs/browser";
+import { HOURS, localDateKey, hasTooManyConsecutiveHours } from "../lib/bookingRules.mjs";
 
 interface Booking {
-  id: string;
   date: string;
   hour: number;
-  clientName: string;
-  clientEmail: string;
 }
 
 // Créneaux de 10h à 2h du matin (16 créneaux d'1h)
-const TIME_SLOTS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1];
+const TIME_SLOTS = HOURS;
 
 export function BookingCalendar() {
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
@@ -26,10 +25,16 @@ export function BookingCalendar() {
   const [clientEmail, setClientEmail] = useState("");
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   // Charger les réservations au démarrage
   useEffect(() => {
-    fetchBookings();
+    void fetchBookings();
+    const refresh = () => { if (document.visibilityState === "visible") void fetchBookings(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, []);
 
   // Nettoyer le formulaire quand le Dialog se ferme
@@ -41,24 +46,26 @@ export function BookingCalendar() {
   }, [dialogOpen]);
 
   const fetchBookings = async () => {
+    setLoading(true);
     try {
       const response = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/bookings`,
         {
           headers: {
             Authorization: `Bearer ${publicAnonKey}`,
-          },
+          }, cache: "no-store", signal: AbortSignal.timeout(15000),
         }
       );
 
       if (response.ok) {
         const data = await response.json();
-        setBookings(data.bookings || []);
+        if (!Array.isArray(data.bookings)) throw Error("Calendrier incomplet");
+        setBookings(data.bookings); setLoadError(false);
       } else {
-        console.error("Failed to fetch bookings");
+        throw Error("Calendrier indisponible");
       }
     } catch (error) {
-      console.error("Error fetching bookings:", error);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -66,7 +73,7 @@ export function BookingCalendar() {
 
   const isSlotBooked = (hour: number) => {
     if (!selectedDate) return false;
-    const dateStr = selectedDate.toISOString().split("T")[0];
+    const dateStr = localDateKey(selectedDate);
     return bookings.some(
       (booking) =>
         booking.date === dateStr &&
@@ -85,91 +92,55 @@ export function BookingCalendar() {
   };
 
   const handleSlotClick = (hour: number) => {
-    if (isSlotBooked(hour)) return;
+    if (loading || loadError || saving || isSlotBooked(hour)) return;
     
     // Toggle slot selection
     setSelectedSlots(prevSlots => {
       if (prevSlots.includes(hour)) {
         return prevSlots.filter(slot => slot !== hour);
       } else {
-        return [...prevSlots, hour];
+        const next = [...prevSlots, hour];
+        if (hasTooManyConsecutiveHours(next)) { toast.error("Vous ne pouvez pas réserver plus de 2 heures consécutives."); return prevSlots; }
+        return next;
       }
     });
   };
 
   const handleOpenDialog = () => {
-    if (selectedSlots.length > 0) {
+    if (!loading && !loadError && !saving && selectedSlots.length > 0) {
       setDialogOpen(true);
     }
   };
 
   const handleBooking = async () => {
-    if (!selectedDate || selectedSlots.length === 0 || !clientName || !clientEmail) {
-      console.error("Booking validation failed", { selectedDate, selectedSlots, clientName, clientEmail });
+    if (saving || loading || loadError || !selectedDate || selectedSlots.length === 0 || !clientName || !clientEmail) {
       return;
     }
 
-    const dateStr = selectedDate.toISOString().split("T")[0];
-    const newBookings: Booking[] = selectedSlots.map(hour => ({
-      id: `${Date.now()}-${hour}`,
-      date: dateStr,
-      hour,
-      clientName,
-      clientEmail,
-    }));
-
+    if (hasTooManyConsecutiveHours(selectedSlots)) { toast.error("Vous ne pouvez pas réserver plus de 2 heures consécutives."); return; }
+    const dateStr = localDateKey(selectedDate);
+    setSaving(true);
     try {
-      // Sauvegarder chaque réservation dans la base de données
-      for (const booking of newBookings) {
-        const saveResponse = await fetch(
-          `https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/bookings`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${publicAnonKey}`,
-            },
-            body: JSON.stringify(booking),
-          }
-        );
-
-        if (!saveResponse.ok) {
-          console.error("Failed to save booking:", await saveResponse.json());
-          toast.error("Erreur lors de la sauvegarde de la réservation");
-          return;
-        }
+      const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/bookings/batch`, {
+        method: "POST", headers: {"Content-Type":"application/json",Authorization:`Bearer ${publicAnonKey}`},
+        body: JSON.stringify({date:dateStr,slots:selectedSlots,clientName,clientEmail}),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        await fetchBookings(); setSelectedSlots([]); setDialogOpen(false);
+        toast.error(result.error || "Réservation impossible. Actualisez le calendrier."); return;
       }
 
-      // Envoyer l'email de notification
-      const emailResponse = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/send-booking-email`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${publicAnonKey}`,
-          },
-          body: JSON.stringify({
-            clientName,
-            clientEmail,
-            date: selectedDate.toLocaleDateString("fr-FR", {
-              weekday: "long",
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            }),
-            slots: selectedSlots,
-          }),
-        }
-      );
-
-      if (!emailResponse.ok) {
-        const errorData = await emailResponse.json();
-        console.error("Failed to send email:", errorData);
-        toast.error("Réservation enregistrée mais email non envoyé");
-      } else {
-        toast.success("Réservation confirmée ! Un email a été envoyé.");
-      }
+      // Preserve the email service and template used by the live calendar.
+      // This runs only after every requested slot has been saved successfully.
+      try {
+        const slotsText = [...selectedSlots].sort((a,b)=>a-b).map(hour=>`${hour}h00 – ${(hour+1)%24}h00`).join(", ");
+        await emailjs.send("service_bain_sauna", "template_1da9iji", {
+          client_name:clientName, client_email:clientEmail,
+          date:selectedDate.toLocaleDateString("fr-FR",{weekday:"long",year:"numeric",month:"long",day:"numeric"}),slots:slotsText,
+        }, "Po1cvlscPzVavD84k");
+        toast.success("Réservation confirmée ! Un email de confirmation a été envoyé.");
+      } catch { toast.success("Réservation enregistrée. L’email de confirmation n’a pas pu être envoyé."); }
 
       // Recharger les réservations depuis la base
       await fetchBookings();
@@ -180,8 +151,9 @@ export function BookingCalendar() {
     } catch (error) {
       console.error("Error during booking:", error);
       toast.error("Erreur lors de la réservation");
+      await fetchBookings();
       return;
-    }
+    } finally { setSaving(false); }
   };
 
   return (
@@ -252,7 +224,7 @@ export function BookingCalendar() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {loading ? (
+              {loadError ? <div role="alert" className="text-center text-white py-8">Calendrier indisponible. Aucune réservation ne peut être effectuée.<Button onClick={() => void fetchBookings()}>Réessayer</Button></div> : loading ? (
                 <div className="text-center text-[#c9a66b] py-8">Chargement des réservations...</div>
               ) : (
                 <>
@@ -268,7 +240,7 @@ export function BookingCalendar() {
                         e.stopPropagation();
                         handleSlotClick(hour);
                       }}
-                      disabled={isBooked}
+                      disabled={isBooked || saving}
                       type="button"
                       className={`
                         p-4 rounded-lg border-2 transition-colors duration-200
