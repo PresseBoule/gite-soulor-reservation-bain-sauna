@@ -8,11 +8,8 @@ import { projectId, publicAnonKey } from "../utils/supabase/info";
 import { BookingModal } from "./BookingModal";
 
 interface Booking {
-  id: string;
   date: string;
   hour: number;
-  clientName: string;
-  clientEmail: string;
 }
 
 // Créneaux de 10h à 2h du matin (16 créneaux d'1h)
@@ -26,10 +23,16 @@ export function BookingCalendar() {
   const [clientEmail, setClientEmail] = useState("");
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   // Charger les réservations au démarrage
   useEffect(() => {
-    fetchBookings();
+    void fetchBookings();
+    const refresh = () => { if (document.visibilityState === "visible") void fetchBookings(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, []);
 
   // Nettoyer le formulaire quand le Dialog se ferme
@@ -41,24 +44,26 @@ export function BookingCalendar() {
   }, [dialogOpen]);
 
   const fetchBookings = async () => {
+    setLoading(true);
     try {
       const response = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/bookings`,
         {
           headers: {
             Authorization: `Bearer ${publicAnonKey}`,
-          },
+          }, cache: "no-store", signal: AbortSignal.timeout(15000),
         }
       );
 
       if (response.ok) {
         const data = await response.json();
-        setBookings(data.bookings || []);
+        if (!Array.isArray(data.bookings)) throw Error("Calendrier incomplet");
+        setBookings(data.bookings); setLoadError(false);
       } else {
-        console.error("Failed to fetch bookings");
+        throw Error("Calendrier indisponible");
       }
     } catch (error) {
-      console.error("Error fetching bookings:", error);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -85,7 +90,7 @@ export function BookingCalendar() {
   };
 
   const handleSlotClick = (hour: number) => {
-    if (isSlotBooked(hour)) return;
+    if (loading || loadError || saving || isSlotBooked(hour)) return;
     
     // Toggle slot selection
     setSelectedSlots(prevSlots => {
@@ -98,46 +103,27 @@ export function BookingCalendar() {
   };
 
   const handleOpenDialog = () => {
-    if (selectedSlots.length > 0) {
+    if (!loading && !loadError && !saving && selectedSlots.length > 0) {
       setDialogOpen(true);
     }
   };
 
   const handleBooking = async () => {
-    if (!selectedDate || selectedSlots.length === 0 || !clientName || !clientEmail) {
-      console.error("Booking validation failed", { selectedDate, selectedSlots, clientName, clientEmail });
+    if (saving || loading || loadError || !selectedDate || selectedSlots.length === 0 || !clientName || !clientEmail) {
       return;
     }
 
     const dateStr = selectedDate.toISOString().split("T")[0];
-    const newBookings: Booking[] = selectedSlots.map(hour => ({
-      id: `${Date.now()}-${hour}`,
-      date: dateStr,
-      hour,
-      clientName,
-      clientEmail,
-    }));
-
+    setSaving(true);
     try {
-      // Sauvegarder chaque réservation dans la base de données
-      for (const booking of newBookings) {
-        const saveResponse = await fetch(
-          `https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/bookings`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${publicAnonKey}`,
-            },
-            body: JSON.stringify(booking),
-          }
-        );
-
-        if (!saveResponse.ok) {
-          console.error("Failed to save booking:", await saveResponse.json());
-          toast.error("Erreur lors de la sauvegarde de la réservation");
-          return;
-        }
+      const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-2b20b999/bookings/batch`, {
+        method: "POST", headers: {"Content-Type":"application/json",Authorization:`Bearer ${publicAnonKey}`},
+        body: JSON.stringify({date:dateStr,slots:selectedSlots,clientName,clientEmail}),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        await fetchBookings(); setSelectedSlots([]); setDialogOpen(false);
+        toast.error(result.error || "Réservation impossible. Actualisez le calendrier."); return;
       }
 
       // Envoyer l'email de notification
@@ -180,8 +166,9 @@ export function BookingCalendar() {
     } catch (error) {
       console.error("Error during booking:", error);
       toast.error("Erreur lors de la réservation");
+      await fetchBookings();
       return;
-    }
+    } finally { setSaving(false); }
   };
 
   return (
@@ -252,7 +239,7 @@ export function BookingCalendar() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {loading ? (
+              {loadError ? <div role="alert" className="text-center text-white py-8">Calendrier indisponible. Aucune réservation ne peut être effectuée.<Button onClick={() => void fetchBookings()}>Réessayer</Button></div> : loading ? (
                 <div className="text-center text-[#c9a66b] py-8">Chargement des réservations...</div>
               ) : (
                 <>

@@ -1,7 +1,8 @@
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
-import * as kv from "./kv_store.tsx";
+import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
+import { registerBookings } from "./bookings.ts";
 const app = new Hono();
 
 // Enable logger
@@ -24,36 +25,9 @@ app.get("/make-server-2b20b999/health", (c) => {
   return c.json({ status: "ok" });
 });
 
-// Endpoint pour récupérer toutes les réservations
-app.get("/make-server-2b20b999/bookings", async (c) => {
-  try {
-    const bookings = await kv.getByPrefix("booking:");
-    return c.json({ bookings: bookings || [] });
-  } catch (error) {
-    console.error("Error fetching bookings:", error);
-    return c.json({ error: "Failed to fetch bookings", message: String(error) }, 500);
-  }
-});
-
-// Endpoint pour sauvegarder une réservation
-app.post("/make-server-2b20b999/bookings", async (c) => {
-  try {
-    const body = await c.req.json();
-    const { id, date, hour, clientName, clientEmail } = body;
-
-    if (!id || !date || hour === undefined || !clientName || !clientEmail) {
-      return c.json({ error: "Missing required fields" }, 400);
-    }
-
-    const booking = { id, date, hour, clientName, clientEmail };
-    await kv.set(`booking:${id}`, booking);
-
-    return c.json({ success: true, booking });
-  } catch (error) {
-    console.error("Error saving booking:", error);
-    return c.json({ error: "Failed to save booking", message: String(error) }, 500);
-  }
-});
+const db = () => createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+registerBookings(app, db);
+const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 
 // Endpoint pour envoyer un email de confirmation de réservation
 app.post("/make-server-2b20b999/send-booking-email", async (c) => {
@@ -61,7 +35,7 @@ app.post("/make-server-2b20b999/send-booking-email", async (c) => {
     const body = await c.req.json();
     const { clientName, clientEmail, date, slots } = body;
 
-    if (!clientName || !clientEmail || !date || !slots || slots.length === 0) {
+    if (!clientName || !clientEmail || !date || !Array.isArray(slots) || slots.length === 0 || slots.length > 16 || !slots.every(hour => Number.isInteger(hour) && [0,1,10,11,12,13,14,15,16,17,18,19,20,21,22,23].includes(hour)) || typeof clientName !== "string" || clientName.length > 150 || typeof clientEmail !== "string" || clientEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail) || typeof date !== "string" || date.length > 100) {
       return c.json({ error: "Missing required fields" }, 400);
     }
 
@@ -96,9 +70,9 @@ app.post("/make-server-2b20b999/send-booking-email", async (c) => {
           <p style="background-color: #f0f0f0; padding: 10px; border-left: 4px solid #c9a66b;">
             <strong>Services réservés:</strong> Bain Nordique + Sauna (réservation simultanée)
           </p>
-          <p><strong>Client:</strong> ${clientName}</p>
-          <p><strong>Email:</strong> ${clientEmail}</p>
-          <p><strong>Date:</strong> ${date}</p>
+          <p><strong>Client:</strong> ${escapeHtml(clientName)}</p>
+          <p><strong>Email:</strong> ${escapeHtml(clientEmail)}</p>
+          <p><strong>Date:</strong> ${escapeHtml(date)}</p>
           <p><strong>Créneaux réservés:</strong></p>
           <pre style="background-color: #f4f4f4; padding: 10px; border-radius: 5px;">${slotsText}</pre>
           <p style="color: #666; font-size: 12px; margin-top: 20px;">
